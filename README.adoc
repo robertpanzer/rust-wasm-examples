@@ -1,0 +1,92 @@
+= Rust Wasm examples for Envoy
+
+This repository contains some samples for Envoy filters written in Rust to be run as Wasm plugins.
+Some are used as reproducers for issues that I am observing.
+
+== Not able to dispatch blocking requests from on_http_request_body
+
+To test this build the filter with cargo like this:
+
+----
+cargo build --target wasm32-unknown-unknown --release
+----
+
+Now start Istio-Proxy, at least 1.8.1, with the configuration in this repo:
+
+----
+# envoy -c envoy.yaml
+...
+[2020-12-15 10:53:46.155][22884151][info][config] [external/envoy/source/server/listener_manager_impl.cc:888] all dependencies initialized. starting workers
+[2020-12-15 10:53:46.155][22884151][info][main] [external/envoy/source/server/server.cc:679] starting main dispatch loop
+----
+
+Now start the testserver:
+
+----
+# go run testserver/main.go
+2020/12/15 10:44:21 Testserver listening on [::]:8086
+----
+
+=== Sending blocking request from on_http_request_headers works
+
+Sending blocking requests from `on_http_request_headers()` works:
+
+----
+curl 'localhost:8888/onheader' -v
+...
+< HTTP/1.1 200 OK
+< content-length: 13
+< content-type: text/plain
+< date: Tue, 15 Dec 2020 10:04:11 GMT
+< server: envoy
+< x-envoy-upstream-service-time: 0
+< powered-by: proxy-wasm
+< authenticated: yes <1>
+<
+example body
+----
+<1> This header indicates that the response was not sent before `on_http_call_response()` was executed.
+
+The envoy log also indicates that everything went right:
+
+----
+[2020-12-15 11:04:10.769][22893685] ... wasm log: Got new request to /onheader
+[2020-12-15 11:04:10.770][22893685] ... wasm log: Dispatching external request was successful, got token 1
+[2020-12-15 11:04:11.775][22893685] ... wasm log: Got response for token 1
+[2020-12-15 11:04:11.775][22893685] ... wasm log: Got response header :status -> 200
+[2020-12-15 11:04:11.775][22893685] ... wasm log: Got response header date -> Tue, 15 Dec 2020 10:04:11 GMT
+[2020-12-15 11:04:11.775][22893685] ... wasm log: Got response header content-length -> 0
+[2020-12-15 11:04:11.775][22893685] ... wasm log: Got response header x-envoy-upstream-service-time -> 1004
+[2020-12-15 11:04:11.776][22893685] ... wasm log: Sending response headers
+----
+
+The request takes about a second as the testserver sleeps for one second before responding.
+
+=== Sending blocking request from on_http_request_body does not work
+
+Now a similar request that dispatches a request from `on_http_request_body()` responds immediately even though `on_http_request_body()` returns Action::Pause:
+
+----
+# curl 'localhost:8888/ondata' -v --data "Hello World"
+...
+< HTTP/1.1 200 OK
+< content-length: 13
+< content-type: text/plain
+< date: Tue, 15 Dec 2020 10:05:09 GMT
+< server: envoy
+< powered-by: proxy-wasm
+< authenticated: no <1>
+<
+example body
+----
+<1> This header indicates that the response was sent before `on_http_call_response()` was executed.
+
+The log shows that the dispatching of the request was successful, but the response was not even received by the filter:
+
+----
+[2020-12-15 11:05:10.113] ... wasm log: Got new request to /ondata
+[2020-12-15 11:05:10.114] ... wasm log: On data and I need to auth true
+[2020-12-15 11:05:10.114] ... wasm log: On data and I need to auth true
+[2020-12-15 11:05:10.114] ... wasm log: Dispatching external request was successful, got token 2
+[2020-12-15 11:05:10.114] ... wasm log: Sending response headers
+----
