@@ -29,8 +29,8 @@ impl HttpContext for HttpAuthRandom {
         info!("Got new request to {}", path);
 
         match path.as_str() {
-            "/onheader" => self.execute_auth_call(),
-            "/ondata" => {
+            "/headers" => self.execute_auth_call(),
+            "/anything" => {
                 self.auth_on_data = true;
                 Action::Continue
             }
